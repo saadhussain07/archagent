@@ -1,0 +1,7 @@
+# ArchAgent runtime dependencies
+# ------------------------------
+# None. ArchAgent uses only the Python standard library (urllib for the DeepSeek
+# API, tkinter for the GUI, sqlite3/unittest for running generated projects),
+# so the .exe stays small and has no third-party supply chain.
+#
+# Development / build tools are in requirements-dev.txt.

@@ -1,0 +1,69 @@
+name: Build Windows .exe
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write   # needed to attach the .exe to a GitHub Release on tags
+
+jobs:
+  test:
+    name: Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r requirements-dev.txt
+      - run: python -m pytest -q
+
+  build:
+    name: Build ArchAgent.exe
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r requirements-dev.txt
+
+      - name: PyInstaller (one-file, windowed + console variants)
+        run: pyinstaller packaging/ArchAgent.spec --noconfirm --clean
+
+      - name: Smoke test the frozen executable (no system Python involved)
+        shell: pwsh
+        run: |
+          $exe = ".\dist\ArchAgent-cli.exe"
+          & $exe cli --preprocess-only --doc examples/Architecture_Documentation.md `
+                     --views examples/Architecture_View.md --out smoke
+          if (-not (Test-Path smoke/spec.json)) { throw "preprocessing failed" }
+          & $exe --child run-tests tests/fixtures/sample_project smoke/tests.txt
+          Get-Content smoke/tests.txt
+          if ($LASTEXITCODE -ne 0) { throw "bundled interpreter could not run unittest" }
+          & $exe --child run-script tests/fixtures/sample_project smoke/self.txt main.py --selftest
+          if (-not (Select-String -Path smoke/self.txt -Pattern "SELFTEST OK")) { throw "selftest failed" }
+          Get-Item dist/*.exe | Format-Table Name, Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ArchAgent-windows
+          path: |
+            dist/ArchAgent.exe
+            dist/ArchAgent-cli.exe
+
+      - name: Attach to GitHub Release (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/ArchAgent.exe
+            dist/ArchAgent-cli.exe
