@@ -17,6 +17,8 @@ import time
 from pathlib import Path
 
 from .agent.loop import Agent, AgentConfig
+from .config import ENV_KEYS
+from .llm.providers import PROVIDERS, get_provider
 from .preprocess.spec_builder import build_spec
 
 
@@ -49,9 +51,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--doc", required=True, help="architecture document (.md)")
     ap.add_argument("--views", help="architecture views with PlantUML (.md)")
     ap.add_argument("--out", required=True, help="output project directory")
-    ap.add_argument("--api-key", default=os.environ.get("DEEPSEEK_API_KEY", ""))
-    ap.add_argument("--model", default="deepseek-v4-pro")
-    ap.add_argument("--base-url", default="https://api.deepseek.com")
+    ap.add_argument("--provider", default="deepseek", choices=sorted(PROVIDERS),
+                    help="deepseek (required for submission) | openrouter / gemini (free, practice) | custom")
+    ap.add_argument("--api-key", default="", help="else read from DEEPSEEK_/OPENROUTER_/GEMINI_API_KEY")
+    ap.add_argument("--model", default=None, help="default: the provider's first model")
+    ap.add_argument("--base-url", default=None)
     ap.add_argument("--budget", type=float, default=1.0, help="hard USD cap (default 1.0)")
     ap.add_argument("--max-turns", type=int, default=60)
     ap.add_argument("--effort", default="high", choices=["low", "high", "max"])
@@ -67,11 +71,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"wrote {out / 'spec.json'}")
         return 0
 
-    if not a.api_key:
-        print("error: provide --api-key or set DEEPSEEK_API_KEY", file=sys.stderr)
+    prov = get_provider(a.provider)
+    a.api_key = a.api_key or os.environ.get(ENV_KEYS[prov.key], "")
+    if not a.api_key and prov.key != "custom":
+        print(f"error: provide --api-key or set {ENV_KEYS[prov.key]}", file=sys.stderr)
         return 2
     cfg = AgentConfig(api_key=a.api_key, doc_path=a.doc, views_path=a.views, output_dir=a.out,
-                      model=a.model, base_url=a.base_url, thinking=not a.no_thinking,
+                      provider=prov.key, model=a.model or prov.models[0],
+                      base_url=a.base_url or prov.base_url, thinking=not a.no_thinking,
                       reasoning_effort=a.effort, budget_usd=a.budget, max_turns=a.max_turns)
     t0 = time.time()
     result = Agent(cfg, on_event=_printer).run()

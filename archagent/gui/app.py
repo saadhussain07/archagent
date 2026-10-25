@@ -24,7 +24,8 @@ from tkinter import filedialog, messagebox, ttk
 
 from .. import APP_NAME, __version__
 from ..agent.loop import Agent, AgentConfig
-from ..config import Settings
+from ..config import Settings, key_for
+from ..llm.providers import PROVIDERS, get_provider, provider_for_label
 from ..llm.client import DeepSeekClient, LLMError
 from ..preprocess.spec_builder import build_spec
 from ..runtime import runner
@@ -63,7 +64,7 @@ class App:
         self.last_output_dir: Path | None = None
 
         root.title(f"{APP_NAME} {__version__} - DeepSeek code agent")
-        root.geometry("1280x800")
+        root.geometry("1280x860")
         root.minsize(1080, 680)
         root.configure(bg=BG)
         self._style()
@@ -140,6 +141,8 @@ class App:
         self.v_show = tk.BooleanVar(value=False)
         self.v_remember = tk.BooleanVar()
         self.v_model = tk.StringVar()
+        self.v_provider = tk.StringVar()
+        self.v_base = tk.StringVar()
         self.v_thinking = tk.BooleanVar()
         self.v_effort = tk.StringVar()
         self.v_doc = tk.StringVar()
@@ -149,7 +152,13 @@ class App:
         self.v_turns = tk.StringVar()
         p.columnconfigure(1, weight=1)
 
-        r = self._section(p, "DeepSeek API", 0)
+        r = self._section(p, "LLM provider", 0)
+        ttk.Label(p, text="Provider", style="Card.TLabel").grid(row=r, column=0, sticky="w", pady=3)
+        self.cb_provider = ttk.Combobox(p, textvariable=self.v_provider, state="readonly", width=34,
+                                        values=[pv.label for pv in PROVIDERS.values()])
+        self.cb_provider.grid(row=r, column=1, columnspan=2, sticky="ew", padx=6)
+        self.cb_provider.bind("<<ComboboxSelected>>", self._on_provider_change)
+        r += 1
         ttk.Label(p, text="API key", style="Card.TLabel").grid(row=r, column=0, sticky="w")
         self.e_key = ttk.Entry(p, textvariable=self.v_key, show="•", width=34)
         self.e_key.grid(row=r, column=1, sticky="ew", padx=6)
@@ -162,10 +171,17 @@ class App:
                         ).pack(side="left")
         ttk.Checkbutton(flags, text="Remember key", variable=self.v_remember,
                         style="Card.TCheckbutton").pack(side="left", padx=10)
+        link = tk.Label(flags, text="Get a key ↗", fg=ACCENT, bg=CARD, cursor="hand2", font=self.f_small)
+        link.pack(side="left", padx=4)
+        link.bind("<Button-1>", lambda _e: self._open_key_page())
         r += 1
         ttk.Label(p, text="Model", style="Card.TLabel").grid(row=r, column=0, sticky="w", pady=3)
-        ttk.Combobox(p, textvariable=self.v_model, values=["deepseek-v4-pro", "deepseek-flash"],
-                     width=20).grid(row=r, column=1, sticky="w", padx=6)
+        self.cb_model = ttk.Combobox(p, textvariable=self.v_model, width=34)
+        self.cb_model.grid(row=r, column=1, columnspan=2, sticky="ew", padx=6)
+        r += 1
+        ttk.Label(p, text="Base URL", style="Card.TLabel").grid(row=r, column=0, sticky="w", pady=3)
+        ttk.Entry(p, textvariable=self.v_base, width=34).grid(row=r, column=1, columnspan=2,
+                                                               sticky="ew", padx=6)
         r += 1
         ttk.Label(p, text="Reasoning", style="Card.TLabel").grid(row=r, column=0, sticky="w")
         think = ttk.Frame(p, style="Card.TFrame")
@@ -174,6 +190,10 @@ class App:
                         style="Card.TCheckbutton").pack(side="left")
         ttk.Combobox(think, textvariable=self.v_effort, values=["low", "high", "max"], width=6,
                      state="readonly").pack(side="left", padx=8)
+        r += 1
+        self.l_provider_note = tk.Label(p, text="", bg=CARD, fg=MUTED, font=self.f_small, justify="left",
+                                        wraplength=420, anchor="w")
+        self.l_provider_note.grid(row=r, column=0, columnspan=3, sticky="w", pady=(2, 0))
 
         r = self._section(p, "Inputs", r + 1)
         self._file_row(p, r, "Architecture doc", self.v_doc, self._pick_doc)
@@ -305,7 +325,13 @@ class App:
         s = self.settings
         self.v_key.set(s.api_key)
         self.v_remember.set(s.remember_key)
+        prov = get_provider(s.provider)
+        self.v_provider.set(prov.label)
+        self.cb_model.configure(values=list(prov.models))
         self.v_model.set(s.model)
+        self.v_base.set(s.base_url or prov.base_url)
+        self._current_provider = prov.key
+        self._update_provider_note()
         self.v_thinking.set(s.thinking)
         self.v_effort.set(s.reasoning_effort)
         self.v_doc.set(s.doc_path)
@@ -319,7 +345,10 @@ class App:
         s = self.settings
         s.api_key = self.v_key.get().strip()
         s.remember_key = bool(self.v_remember.get())
-        s.model = self.v_model.get().strip() or "deepseek-v4-pro"
+        prov = provider_for_label(self.v_provider.get())
+        s.provider = prov.key
+        s.model = self.v_model.get().strip() or prov.models[0]
+        s.base_url = self.v_base.get().strip() or prov.base_url
         s.thinking = bool(self.v_thinking.get())
         s.reasoning_effort = self.v_effort.get() or "high"
         s.doc_path, s.views_path = self.v_doc.get().strip(), self.v_views.get().strip()
@@ -356,6 +385,38 @@ class App:
         if d:
             self.v_out.set(d)
 
+    # -------------------------------------------------------------- provider
+    def _on_provider_change(self, _evt=None) -> None:
+        old = getattr(self, "_current_provider", "deepseek")
+        prov = provider_for_label(self.v_provider.get())
+        if prov.key == old:
+            return
+        # keep one key per provider (in memory; on disk only if "Remember key")
+        if self.v_key.get().strip():
+            self.settings.api_keys[old] = self.v_key.get().strip()
+        self.v_key.set(key_for(prov.key, self.settings))
+        self.cb_model.configure(values=list(prov.models))
+        self.v_model.set(prov.models[0])
+        self.v_base.set(prov.base_url)
+        self._current_provider = prov.key
+        self._update_provider_note()
+
+    def _update_provider_note(self) -> None:
+        prov = provider_for_label(self.v_provider.get())
+        if prov.deepseek_api:
+            self.l_provider_note.configure(
+                text="Official DeepSeek API - the configuration the evaluation requires.", fg=OK)
+        else:
+            self.l_provider_note.configure(
+                text=f"⚠ Practice mode: free provider, cost shown as $0. The submission must use the "
+                     f"official DeepSeek API (deepseek-v4-pro). {prov.note}", fg=WARN)
+
+    def _open_key_page(self) -> None:
+        import webbrowser
+        url = provider_for_label(self.v_provider.get()).key_url
+        if url:
+            webbrowser.open(url)
+
     # --------------------------------------------------------------- actions
     def _test_key(self) -> None:
         s = self._save_form()
@@ -363,8 +424,11 @@ class App:
 
         def work():
             try:
-                reply = DeepSeekClient(s.api_key, model=s.model, base_url=s.base_url,
-                                       max_retries=1, timeout=30).ping()
+                prov = get_provider(s.provider)
+                reply = DeepSeekClient(s.api_key, model=s.model, base_url=s.base_url, max_retries=1,
+                                       timeout=60, deepseek_api=prov.deepseek_api,
+                                       extra_headers=prov.extra_headers,
+                                       provider_name=prov.label.split(" - ")[0]).ping()
                 self.events.put({"type": "_keytest", "ok": True, "text": f"Key works. Model replied: {reply!r}"})
             except LLMError as e:
                 self.events.put({"type": "_keytest", "ok": False, "text": str(e)})
@@ -385,8 +449,8 @@ class App:
                          f"{len(d['requirements'])} requirements.")
 
     def _validate(self, s: Settings) -> str | None:
-        if not s.api_key:
-            return "Enter your DeepSeek API key."
+        if not s.api_key and s.provider != "custom":
+            return "Enter your API key for the selected provider."
         if not Path(s.doc_path).is_file():
             return "Select the architecture document (.md)."
         if s.views_path and not Path(s.views_path).is_file():
@@ -409,6 +473,7 @@ class App:
             return
         cfg = AgentConfig(api_key=s.api_key, doc_path=s.doc_path, views_path=s.views_path or None,
                           output_dir=s.output_dir, model=s.model, base_url=s.base_url,
+                          provider=s.provider,
                           thinking=s.thinking, reasoning_effort=s.reasoning_effort,
                           budget_usd=s.budget_usd, max_turns=s.max_turns,
                           extra_instructions=s.extra_instructions)

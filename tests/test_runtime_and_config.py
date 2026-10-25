@@ -99,3 +99,18 @@ def test_stale_saved_paths_fall_back_to_examples(tmp_path, monkeypatch):
     s.doc_path = str(tmp_path / "_MEI123" / "gone.md")  # e.g. an old PyInstaller temp dir
     s.save()
     assert Path(Settings.load().doc_path).is_file()
+
+
+def test_keys_are_kept_per_provider(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    for var in ("DEEPSEEK_API_KEY", "OPENROUTER_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
+    s = Settings.load()
+    s.remember_key = True
+    s.provider, s.api_key = "openrouter", "sk-or-1"
+    s.save()
+    loaded = Settings.load()
+    assert loaded.provider == "openrouter" and loaded.api_key == "sk-or-1"
+    from archagent.config import key_for
+    assert key_for("deepseek", loaded) == "" and key_for("openrouter", loaded) == "sk-or-1"

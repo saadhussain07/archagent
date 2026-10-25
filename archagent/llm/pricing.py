@@ -22,6 +22,7 @@ PRICING: dict[str, dict[str, dict[str, float]]] = {
     },
 }
 PEAK_WINDOWS_UTC = ((1, 4), (6, 10))
+ZERO = {"cache_hit": 0.0, "cache_miss": 0.0, "output": 0.0}
 
 
 def is_peak(now: _dt.datetime | None = None) -> bool:
@@ -61,6 +62,7 @@ class CostTracker:
     model: str = "deepseek-v4-pro"
     budget_usd: float = 1.0
     assume_peak: bool = True
+    free: bool = False  # free-tier / local providers: tokens are counted, cost is $0
     total: Usage = field(default_factory=Usage)
     cost_usd: float = 0.0
     calls: int = 0
@@ -76,7 +78,7 @@ class CostTracker:
         details = usage.get("completion_tokens_details") or {}
         reasoning = int(details.get("reasoning_tokens", 0) or 0)
 
-        r = rates_for(self.model, assume_peak=self.assume_peak)
+        r = ZERO if self.free else rates_for(self.model, assume_peak=self.assume_peak)
         cost = (hit * r["cache_hit"] + miss * r["cache_miss"] + out * r["output"]) / 1_000_000
         with self._lock:
             self.total.cache_hit += hit
@@ -97,14 +99,17 @@ class CostTracker:
 
     def estimate_call_cost(self, prompt_tokens: int, max_output: int) -> float:
         """Worst case for the next call: whole prompt uncached + max output."""
-        r = rates_for(self.model, assume_peak=True)
+        r = ZERO if self.free else rates_for(self.model, assume_peak=True)
         return (prompt_tokens * r["cache_miss"] + max_output * r["output"]) / 1_000_000
 
     def estimate_cached_cost(self, cached_tokens: int) -> float:
-        return cached_tokens * rates_for(self.model, assume_peak=True)["cache_hit"] / 1_000_000
+        r = ZERO if self.free else rates_for(self.model, assume_peak=True)
+        return cached_tokens * r["cache_hit"] / 1_000_000
 
     def output_rate(self) -> float:
         """USD per output token at peak rates."""
+        if self.free:
+            return 1e-12  # avoids division by zero; free calls never hit the budget
         return rates_for(self.model, assume_peak=True)["output"] / 1_000_000
 
     def snapshot(self) -> dict:
@@ -117,5 +122,6 @@ class CostTracker:
             "reasoning_tokens": self.total.reasoning,
             "cost_usd": round(self.cost_usd, 6),
             "budget_usd": self.budget_usd,
-            "pricing_mode": "peak (worst case)" if self.assume_peak else ("peak" if is_peak() else "off-peak"),
+            "pricing_mode": "free tier ($0)" if self.free else
+                            "peak (worst case)" if self.assume_peak else ("peak" if is_peak() else "off-peak"),
         }

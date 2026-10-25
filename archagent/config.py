@@ -10,8 +10,16 @@ import json
 import os
 import shutil
 import sys
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
+
+
+ENV_KEYS = {"deepseek": "DEEPSEEK_API_KEY", "openrouter": "OPENROUTER_API_KEY",
+            "gemini": "GEMINI_API_KEY", "custom": "OPENAI_API_KEY"}
+
+
+def key_for(provider: str, settings: "Settings") -> str:
+    return settings.api_keys.get(provider) or os.environ.get(ENV_KEYS.get(provider, ""), "")
 
 
 def settings_dir() -> Path:
@@ -46,6 +54,8 @@ def bundled_examples_dir() -> Path:
 class Settings:
     api_key: str = ""
     remember_key: bool = False
+    provider: str = "deepseek"
+    api_keys: dict = field(default_factory=dict)   # provider -> key (only if remember_key)
     model: str = "deepseek-v4-pro"
     base_url: str = "https://api.deepseek.com"
     thinking: bool = True
@@ -70,7 +80,7 @@ class Settings:
         except (OSError, ValueError):
             pass
         if not s.api_key:
-            s.api_key = os.environ.get("DEEPSEEK_API_KEY", "")
+            s.api_key = s.api_keys.get(s.provider) or os.environ.get(ENV_KEYS.get(s.provider, ""), "")
         ex = bundled_examples_dir()
         # fall back to the bundled examples when unset or the saved file has gone
         if not (s.doc_path and Path(s.doc_path).is_file()) and (ex / "Architecture_Documentation.md").is_file():
@@ -82,9 +92,12 @@ class Settings:
         return s
 
     def save(self) -> None:
+        if self.remember_key and self.api_key:
+            self.api_keys[self.provider] = self.api_key
         data = asdict(self)
         if not self.remember_key:
             data["api_key"] = ""
+            data["api_keys"] = {}
         d = settings_dir()
         d.mkdir(parents=True, exist_ok=True)
         (d / "settings.json").write_text(json.dumps(data, indent=2), encoding="utf-8")

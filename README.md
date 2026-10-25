@@ -32,11 +32,24 @@ ArchAgent-cli.exe cli --doc Architecture_Documentation.md --views Architecture_V
 ArchAgent-cli.exe cli --preprocess-only --doc Architecture_Documentation.md --views Architecture_View.md --out .\spec
 ```
 
+## Free practice mode (no DeepSeek credit needed)
+
+The **Provider** dropdown also offers free, OpenAI-compatible providers, so you can try the agent at no cost:
+
+| Provider | Get a free key | Notes |
+|---|---|---|
+| **DeepSeek (official)**, the default | platform.deepseek.com | **Required for the evaluation submission** (`deepseek-v4-pro`) |
+| OpenRouter, free models | openrouter.ai/keys | `...:free` models, about 20 requests/min and 50/day; pick a model that supports tool calling |
+| Google Gemini, free tier | aistudio.google.com/apikey | Flash / Flash-Lite models |
+| Custom | none | any OpenAI-compatible endpoint, e.g. Ollama at `http://localhost:11434/v1` |
+
+On a non-DeepSeek provider, DeepSeek-only fields (`thinking`, `reasoning_content`) are not sent, cost is reported as $0, and the run report is labelled as a practice run.
+
 ## GUI
 
 | Area | What it does |
 |---|---|
-| **DeepSeek API** | API key (masked; stored only if *Remember key* is ticked), *Test* = 5-token ping, model, thinking mode + effort |
+| **LLM provider** | provider (DeepSeek official or a free practice provider), API key (masked; stored only if *Remember key* is ticked), *Test* = tiny ping, model, base URL, thinking mode + effort |
 | **Inputs** | architecture document + UML views file pickers; *Preview structured JSON* shows the preprocessed spec |
 | **Output** | project folder |
 | **Limits** | USD budget (hard cap) and max turns |
@@ -114,7 +127,7 @@ Run from source on any OS: `python -m archagent` (GUI) or `python -m archagent c
 
 ```bash
 pip install -r requirements-dev.txt
-python -m pytest -q        # 68 tests, no network, no API key needed
+python -m pytest -q        # 77 tests, no network, no API key needed
 ```
 
 The tests cover the Markdown and PlantUML parsers (all 11 diagram kinds), the spec digest, tool sandboxing and edit rules, the DeepSeek client against a local fake HTTP server (thinking payload, retries, 401/402 handling), cost math and peak windows, and the full agent loop with a scripted LLM. Loop scenarios include the happy path, the verification gate, harness-side test re-runs, the budget guard, max turns, stop, LLM errors, token-limit recovery and compaction. They also cover running generated code (layouts, syntax errors, timeouts, sandbox) and settings that never leak the key.

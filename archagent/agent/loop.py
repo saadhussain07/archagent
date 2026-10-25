@@ -28,6 +28,7 @@ from typing import Any, Callable
 
 from ..llm.client import DeepSeekClient, LLMError
 from ..llm.pricing import CostTracker
+from ..llm.providers import get_provider
 from ..preprocess.spec_builder import build_spec
 from ..runtime import runner
 from . import context, prompts
@@ -52,6 +53,7 @@ class AgentConfig:
     output_dir: str
     model: str = "deepseek-v4-pro"
     base_url: str = "https://api.deepseek.com"
+    provider: str = "deepseek"  # see llm/providers.py; non-DeepSeek = practice runs
     thinking: bool = True
     reasoning_effort: str = "high"
     budget_usd: float = 1.0
@@ -83,11 +85,17 @@ class Agent:
         self.cfg = config
         self.emit: EventSink = on_event or (lambda e: None)
         self.stop_event = stop_event or threading.Event()
+        self.provider = get_provider(config.provider)
+        if config.max_tokens_per_call > self.provider.max_output_tokens:
+            config.max_tokens_per_call = self.provider.max_output_tokens
         self.client = client or DeepSeekClient(
-            config.api_key, model=config.model, base_url=config.base_url,
-            thinking=config.thinking, reasoning_effort=config.reasoning_effort)
+            config.api_key, model=config.model, base_url=config.base_url or self.provider.base_url,
+            thinking=config.thinking, reasoning_effort=config.reasoning_effort,
+            deepseek_api=self.provider.deepseek_api, extra_headers=self.provider.extra_headers,
+            provider_name=self.provider.label.split(" - ")[0].split(" (")[0],
+            max_retries=4 if self.provider.deepseek_api else 6)
         self.cost = CostTracker(model=config.model, budget_usd=config.budget_usd,
-                                assume_peak=config.worst_case_pricing)
+                                assume_peak=config.worst_case_pricing, free=self.provider.free)
         self.ws = Workspace(Path(config.output_dir))
         self.tools = build_tools(self.ws)
         self.messages: list[dict[str, Any]] = []
@@ -164,7 +172,8 @@ class Agent:
             for m in self.messages:
                 self._log({"kind": "message", **m})
             tool_schemas = [t.schema() for t in self.tools.values()]
-            self._event("phase", name="agent", text=f"Agent loop started ({self.cfg.model})")
+            practice = "" if self.provider.deepseek_api else "  [PRACTICE RUN - not the required DeepSeek API]"
+            self._event("phase", name="agent", text=f"Agent loop started ({self.cfg.model}){practice}")
 
             while True:
                 if self.stop_event.is_set():
@@ -356,7 +365,9 @@ class Agent:
         lines = [
             "# ArchAgent run report", "",
             f"- Status: **{r.status}**",
-            f"- Model: `{c['model']}` (thinking: {self.cfg.thinking}, effort: {self.cfg.reasoning_effort})",
+            f"- Provider: {self.provider.label} (`{self.cfg.base_url or self.provider.base_url}`)",
+            f"- Model: `{c['model']}` (thinking: {self.cfg.thinking and self.provider.deepseek_api}, "
+            f"effort: {self.cfg.reasoning_effort})",
             f"- Turns: {r.turns} | LLM calls: {c['calls']} | Time: {r.elapsed_s:.0f}s",
             f"- Tokens: {c['prompt_cache_hit_tokens']:,} cached input, {c['prompt_cache_miss_tokens']:,} "
             f"uncached input, {c['completion_tokens']:,} output ({c['reasoning_tokens']:,} reasoning)",
